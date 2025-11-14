@@ -92,3 +92,35 @@ from
   left join negativacao as neg on neg.id_contrato = lb.contrato
 group by
   1,2,3,4,5,6,7,8,9) 
+
+  SELECT 
+  contrato,
+  customer_id,
+  origination,
+  multa,
+  juros,
+  divida_total,
+  paid,
+  status_aplicacao_pagamento,
+  status_negativacao,
+  etapa, 
+  metodo_de_pagamento, 
+  nf, 
+  tipo_de_negociacao,
+  CASE 
+    WHEN datetime(data_liquidacao_travas) < '2024-09-11' THEN data_liquidacao_travas
+    ELSE datetime(register.data_recebimento) END as data_liquidacao_travas,
+  CASE 
+    WHEN datetime(data_liquidacao_travas) < '2024-09-11' THEN valor_recebido_travas 
+    WHEN register.recebido_travas IS NOT NULL THEN CAST(REPLACE(REPLACE(register.recebido_travas, '.', ''),',','.') as float)  
+    ELSE 0 END as valor_recebido_travas, 
+  valor_recebido_negociacoes, 
+  valor_enviado_terceiro, 
+  valor_recebido_terceiro, 
+  recebido_negociacao_tardia, 
+  CASE 
+    WHEN datetime(data_liquidacao_travas) < '2024-09-11' THEN valor_recebido_travas + valor_recebido_negociacoes + valor_recebido_terceiro
+    WHEN datetime(data_liquidacao_travas) >= '2024-09-11'AND register.recebido_travas IS NOT NULL  THEN CAST(REPLACE(REPLACE(register.recebido_travas, '.', ''),',','.') as float) + valor_recebido_negociacoes + valor_enviado_terceiro
+    ELSE 0 + valor_recebido_negociacoes + valor_recebido_terceiro END as valor_recebido_total --adicionar WO 
+  FROM base as b
+  left join query_230190 as register on register.billing_id=b.contrato
