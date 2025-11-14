@@ -1,0 +1,94 @@
+WITH lb AS (
+  select contrato,
+    nf,
+    lb.customer_id,
+    order_number,
+    status,
+    total_to_pay as origination,
+    fine_amount as multa,
+    interest_amount as juros,
+    paid,
+    payment_method_type,
+    days_overdue
+  from
+    cached_query_202997 as lb
+  where
+    days_overdue > 0
+),
+-- pega do loanbook os pedidos que tiveram pelo menos 1 dia de atraso
+travas AS (
+  select
+    id_contrato,
+    t.customer_id,
+    order_number,
+    MAX(data_liquidacao) as data_liquidacao,
+    SUM(CAST(valor_recebido as float)) as valor_recebido,
+    --REPLACE(REPLACE(valor_recebido, '.', ''),',','.') 
+    'tentativa de trava' as etapa
+  from
+    query_228492 as t -- pega o histórico de travas recebidas por contrato
+    group by 1,2,3
+),
+negociacao AS (
+  select contrato,
+    n.customer_id,
+    tipo_de_negociacao,
+    CAST(REPLACE(REPLACE(total_pago_2, '.', ''),',','.') as float) as total_pago,
+    'negociacao' as etapa
+  from
+    query_228379 as n
+),
+cobranca_terceiros as (
+  select contrato,
+    CAST(REPLACE(REPLACE(divida_enviada, '.', ''),',','.') as float) as divida_enviada_para_terceiro,
+    CAST(REPLACE(REPLACE(valor_terceiro, '.', ''),',','.') as float) as valor_recebido_terceiro,
+    CASE
+      WHEN valor_terceiro <> 0 THEN 'recebido_terceiro'
+      ELSE 'enviado_terceiro'
+    END as etapa
+  from
+    query_231619 as ct
+),
+negativacao as (
+  select
+    id_contrato,
+    status
+  from
+    query_214694 as neg
+), 
+base AS (
+select
+  distinct lb.contrato,
+  lb.customer_id,
+  lb.origination,
+  lb.multa,
+  lb.juros,
+  lb.origination + lb.multa + lb.juros as divida_total,
+  lb.paid,
+  lb.status status_aplicacao_pagamento,
+  neg.status as status_negativacao,
+  CASE
+    WHEN ct.etapa IS NOT NULL THEN ct.etapa
+    WHEN n.etapa IS NOT NULL THEN n.etapa
+    WHEN t.etapa IS NOT NULL THEN t.etapa -- falta colocar a etapa de terceiros
+    WHEN lb.status = 0 THEN 'Ligação'
+    ELSE 'boleto_atrasado_pago'
+  END as etapa, 
+  tipo_de_negociacao,
+  payment_method_type as metodo_de_pagamento, 
+  "t"||nf as nf, 
+  t.data_liquidacao as data_liquidacao_travas,
+  CASE WHEN t.valor_recebido IS NULL THEN 0 ELSE CAST(t.valor_recebido as number) END as valor_recebido_travas, 
+  CASE WHEN n.total_pago IS NULL THEN 0 ELSE n.total_pago END as valor_recebido_negociacoes, 
+  CASE WHEN ct.divida_enviada_para_terceiro IS NULL THEN 0 ELSE ct.divida_enviada_para_terceiro END as valor_enviado_terceiro, 
+  CASE WHEN ct.valor_recebido_terceiro IS NULL THEN 0 ELSE ct.valor_recebido_terceiro END as valor_recebido_terceiro, 
+  0 as recebido_negociacao_tardia
+  
+from
+  lb
+  left join travas as t on t.id_contrato = lb.contrato
+  left join negociacao as n on n.contrato = lb.contrato
+  left join cobranca_terceiros as ct on ct.contrato = lb.contrato
+  left join negativacao as neg on neg.id_contrato = lb.contrato
+group by
+  1,2,3,4,5,6,7,8,9) 
