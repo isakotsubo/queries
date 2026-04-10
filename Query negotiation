@@ -1,0 +1,96 @@
+WITH base AS (
+    SELECT 
+        lb.customer_id,
+        lb.order_number,
+        lb.close_date,
+        lb.due_date,
+        lb.payment_date,
+        lb.nf, 
+        l.numero_nf,
+        total_to_pay, 
+        fine_amount AS multa,
+        interest_amount AS juros,
+        paid,
+        lb.contrato,
+        lb.days_overdue,
+        lb.paid,
+        lb.status,
+        payment_method_type
+    FROM cached_query_202997 AS lb -- Loanbook
+    INNER JOIN cached_query_206169 AS l ON lb.nf = l.nfe -- Base com os links dos boletos 
+    WHERE 
+        (lb.status = false OR (lb.status = true AND payment_method_type = 'MANUALLY')
+),
+
+travas AS (
+    SELECT
+        id_contrato,
+        customer_id,
+        MAX(data_liquidacao) AS max_data_liq,
+        MIN(data_liquidacao) AS min_data_liq,
+        SUM(CAST(REPLACE(valor_recebido, ',', '') AS FLOAT)) AS valor_recebido
+    FROM query_209733 -- histórico de travas
+    GROUP BY 1, 2
+),
+
+score_ranked AS (
+    SELECT 
+        *,
+        ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY creation_date DESC) AS rn
+    FROM query_207015
+    WHERE score IS NOT NULL
+)
+
+SELECT 
+    b.customer_id, 
+    b.order_number, 
+    b.close_date, 
+    b.total_to_pay, 
+    b.numero_nf, 
+    b.contrato,
+    b.total_to_pay + b.multa + b.juros AS total_deuda,
+    ROUND(t.valor_recebido, 2) AS valor_recebido_travas,
+    t.max_data_liq,
+    t.min_data_liq,
+    b.paid,
+    b.due_date,
+    CASE 
+        WHEN b.days_overdue >= 12 AND b.days_overdue <= 30 THEN '1-12_30'
+        WHEN b.days_overdue > 30 AND b.days_overdue <= 90 THEN '2-31_90'
+        WHEN b.days_overdue > 90 AND b.days_overdue <= 180 THEN '3-91_180'
+        WHEN b.days_overdue > 180 THEN '4-180+' 
+        WHEN b.days_overdue >= 0 AND b.days_overdue < 12 THEN '5-0_12'
+    END AS delays_bucket,
+    SUBSTR(CAST(b.nf AS TEXT), 1, 10) AS nf,
+    SUBSTR(CAST(b.nf AS TEXT), 11, 10) AS nf2,
+    SUBSTR(CAST(b.nf AS TEXT), 21, 13) AS nf3,
+    SUBSTR(CAST(b.nf AS TEXT), 34, 11) AS nf4,
+    b.payment_method_type,
+    s.score,
+    s.creation_date AS score_creation_date
+
+FROM base AS b
+LEFT JOIN travas AS t 
+    ON t.id_contrato = b.contrato AND t.customer_id = b.customer_id
+LEFT JOIN score_ranked AS s 
+    ON s.customer_id = b.customer_id AND s.rn = 1
+
+WHERE 
+    b.customer_id NOT IN (
+        SELECT customer_id
+        FROM query_217858
+        WHERE status = 'no_cobrar'
+    )
+    AND NOT EXISTS (
+        SELECT customer_id
+        FROM query_231619 AS q
+        WHERE TRIM(CAST(q.contrato AS TEXT)) = TRIM(CAST(b.contrato AS TEXT))
+          AND CAST(REPLACE(REPLACE(REPLACE(TRIM(q.valor_terceiro), 'R$', ''),'.',''),',','.') AS FLOAT) > 0
+    )
+
+ORDER BY 
+    b.customer_id ASC,
+    b.payment_method_type DESC,
+    delays_bucket ASC,
+    total_to_pay ASC
+--LIMIT 1000
